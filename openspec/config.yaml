@@ -1,32 +1,14 @@
-schema: spec-driven
+schema: app-level-sdd
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Application-level specification and acceptance repository. Component repositories
+  own implementation and independent SDD cycles. Follow the app-level-sdd schema.
+  No component split or repository is selected by this setup.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  archive:
+    guidance:
+      - Require explicit human acceptance and successful integrated acceptance before archiving. Verification alone is not human acceptance.
+      - Read and preserve the mapped Linear parent, including canceled status. Require complete tasks and verified spec synchronization before successful archive.
+      - Only after explicit human acceptance and successful archive, move the parent to Done unless canceled. Never mark Done during apply or verification.
+      - If archive fails, leave parent status unchanged. If archive succeeds but the Linear update fails, report archive success and remote failure separately; do not claim Done. Reconcile before retrying.
