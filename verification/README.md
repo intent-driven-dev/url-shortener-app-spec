@@ -12,8 +12,8 @@ cd verification
 npm ci
 npm run test:harness
 npm run app:start
-npm test -- --change <active-change-name>
-npm run app:stop
+npm run app:verify # url-creation: acceptance + boundaries + guaranteed app:stop
+# Or run acceptance manually with FRONTEND_ORIGIN from startup.json, then app:stop.
 ```
 
 All paths below are relative to `verification/` unless stated otherwise.
@@ -63,8 +63,8 @@ contain application data; do not commit secrets.
 
 ## Application startup configuration
 
-The clearly marked `application` section in `scripts/app.mjs` starts empty and
-fails with instructions. After the delivery gate passes, populate it from Design,
+The `application` section in `scripts/app.mjs` pins the published URL creation
+deliveries. It allocates distinct loopback ports and run-isolated storage. After the delivery gate passes, populate it from Design,
 the component registry and delivered repository instructions. Each component has:
 
 - Stable `id`, user-provided `repository`, and delivered `revision` when known.
@@ -87,8 +87,8 @@ failed verification. A leftover startup lock after a hard kill requires inspecti
 the printed temporary state and confirming no startup is active before removing
 that lock. Temporary evidence/checkouts can be removed after recording needed results.
 
-`npm test` currently fails because no application scenarios exist; `app:start`
-currently fails because no architecture is configured. These are intentional guards.
+`npm test -- --change url-creation` selects the four application scenarios.
+Without a selected change, empty canonical specifications still fail explicitly.
 `npm run test:harness` tests infrastructure using temporary fixture repositories and
 HTTP services; it is not application acceptance and makes no Linear changes.
 
@@ -99,3 +99,26 @@ Do not change specs, drop scenarios or weaken assertions to make acceptance pass
 Correct component behavior in its owning repository, obtain a new delivery and
 repeat the delivery gate and integrated acceptance. Binding/harness defects may be
 fixed while preserving the specified expectations.
+
+## URL creation live verification
+
+Refresh the Linear delivery gate before startup. Backend starts first with `npm ci`,
+`npm run storage:init` once and `npm start`; frontend uses `npm ci` and `npm start`.
+`startup.json` retains `runtime.frontendOrigin`, `runtime.backendOrigin`, and
+`runtime.storageDirectory`, exact revisions, checkouts, commands and readiness times.
+Only these nonsecret runtime inputs are persisted; arbitrary environment values are not.
+
+After `npm run app:start`, run `npm run app:verify`. It reads the same persisted runtime,
+runs `npm test -- --change url-creation` with the allocated frontend origin, then the
+additional live boundary suite. It restores storage and invokes `npm run app:stop`
+in a finally block, including after failures. Cucumber retains standard HTML reports;
+`.acceptance/<timestamp>-integration/integration.json` records boundary checks and cleanup.
+External navigation errors fail verification.
+
+For manual boundary execution, set `FRONTEND_ORIGIN`, `BACKEND_ORIGIN`, and
+`ACCEPTANCE_CONTROLS=./acceptance/controls.mjs`, then run
+`node acceptance/boundaries.mjs`. Stop the services afterward, including after failures.
+Restart controls verify ownership before stopping the backend and retain its port
+and storage. Storage outages rename the directory to its sibling `.offline` path;
+restoration never edits mappings or reinitializes storage. `app:stop` also restores
+a leftover outage and records stopped processes in retained startup evidence.

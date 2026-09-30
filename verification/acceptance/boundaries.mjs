@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 // Delivery-specific controls must stop/start owned services and disable/restore
 // storage using documented operational controls, never mutate mapping contents.
 // Resolve the adapter after the delivery gate; missing controls cannot pass.
-export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls }) {
+export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls, onCheck = () => {} }) {
   for (const name of ['stopBackend', 'startBackend', 'disableStorage', 'restoreStorage']) {
     assert.equal(typeof controls[name], 'function', `Missing delivered control: ${name}`);
   }
@@ -25,7 +25,9 @@ export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls
   for (const body of ['{', '{}', '{"destinationUrl":42}', '{"destinationUrl":"/relative"}', '{"destinationUrl":"mailto:visitor@example.com"}']) {
     await error(await post(body), 400, 'INVALID_INPUT');
   }
+  onCheck('invalid input envelopes');
   await error(await request('/s/unknown-' + crypto.randomUUID()), 404, 'NOT_FOUND');
+  onCheck('unknown code envelope');
   const destination = 'https://www.manning.com/books/spec-driven-development?acceptance=preserve&value=a%2Fb#chapter-5';
   const created = await post(JSON.stringify({ destinationUrl: destination }));
   assert.equal(created.status, 201);
@@ -37,6 +39,7 @@ export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls
     assert.equal(response.headers.get('location'), destination);
   }
   await resolves();
+  onCheck('exact path/query/fragment Location');
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -55,15 +58,18 @@ export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls
     assert.equal((await redirect).headers()['location'], destination);
     await navigation;
     assert.equal(page.url(), destination);
+    onCheck('exact browser path/query/fragment navigation');
     await controls.stopBackend();
     try {
       await health(frontendOrigin, 503);
       await error(await post(JSON.stringify({ destinationUrl: destination })), 503, 'BACKEND_UNAVAILABLE');
       await error(await fetch(shortUrl, { redirect: 'manual' }), 503, 'BACKEND_UNAVAILABLE');
+      onCheck('backend connectivity readiness and proxy errors');
     } finally { await controls.startBackend(); }
     await health(backendOrigin, 200);
     await health(frontendOrigin, 200);
     await resolves(); // Same storage and port must be retained by the adapter.
+    onCheck('backend restart durability with retained storage and port');
     await page.goto(frontendOrigin);
     await controls.disableStorage();
     try {
@@ -79,10 +85,14 @@ export async function verifyBoundaries({ frontendOrigin, backendOrigin, controls
       const message = (await failed.json()).error.message;
       await page.getByText(message, { exact: false }).waitFor({ state: 'visible' });
       assert.equal(await page.locator('a[href*="/s/"]').count(), 0, 'No successful link during storage failure');
+      onCheck('genuine storage failure readiness, API errors and no false UI success');
     } finally { await controls.restoreStorage(); }
     await health(backendOrigin, 200);
     await health(frontendOrigin, 200);
     await resolves();
+    const recovered = await post(JSON.stringify({ destinationUrl: destination }));
+    assert.equal(recovered.status, 201, 'Creation recovers after storage restoration');
+    onCheck('storage recovery and retained mapping');
   } finally { await browser.close(); }
 }
 

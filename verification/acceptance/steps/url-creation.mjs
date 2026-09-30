@@ -48,7 +48,10 @@ async function displayed() {
   this.link = this.page.getByRole('link', { name: this.shortUrl, exact: true });
   await this.link.waitFor({ state: 'visible' });
   assert.equal(await this.link.getAttribute('href'), this.shortUrl);
-  assert.ok(await this.link.evaluate(el => el.parentElement.textContent.includes(el.textContent)), 'Result area contains the displayed link');
+  const result = this.page.getByRole('status');
+  assert.equal(await result.isVisible(), true, 'Delivered result region is visible');
+  assert.equal(await result.getByRole('link', { name: this.shortUrl, exact: true }).count(), 1);
+  assert.ok((await result.textContent()).includes(this.shortUrl));
 }
 Then('the result area displays the short URL generated for {string}', async function (destination) {
   assert.equal(this.destination, destination);
@@ -59,9 +62,7 @@ When('the visitor selects the displayed short URL', async function () {
   const response = this.page.waitForResponse(r => r.url() === this.shortUrl);
   const request = this.page.waitForRequest(r => r.isNavigationRequest() && r.url() === this.destination.split('#')[0]);
   // Remote content is irrelevant; the real outgoing navigation is observed.
-  const navigation = this.page.waitForURL(this.destination, { waitUntil: 'commit' }).catch(e => {
-    if (!/ERR_|net::/.test(e.message)) throw e;
-  });
+  const navigation = this.page.waitForURL(this.destination, { waitUntil: 'commit' });
   await this.link.click({ noWaitAfter: true });
   this.redirect = await response;
   this.destinationRequest = await request;

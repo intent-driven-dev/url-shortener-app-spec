@@ -1,22 +1,45 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, unlink, open, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, unlink, open, access, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { createServer } from 'node:net';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { specificationRoot } from './paths.mjs';
 
-// APPLICATION CONFIGURATION — populated by a future feature's apply tasks from
-// accepted Design, architecture/components.md and delivered repository instructions.
-// No component split is inferred. Commands are trusted shell commands from those
-// records. Each entry: { id, repository, revision?, cwd?: '.', install, start,
-// env: {}, readiness: { url, status?: 200, timeoutMs?: 60000 } }.
-// Omitted revision resolves the remote default branch's commit. Set delivered
-// revisions whenever provided. Order entries by their integration dependencies.
-export const application = { components: [] };
+// Published deliveries; runtime origins and isolated storage are allocated per run.
+export const application = { allocateRuntime: true, components: [
+  { id: 'backend', repository: 'https://github.com/intent-driven-dev/url-shortener-be.git',
+    revision: '75d3e6c5366c4cd4699c9b3768bc65fad01cad01', install: 'npm ci',
+    provision: 'npm run storage:init', start: 'npm start', readiness: { url: 'http://127.0.0.1/health' } },
+  { id: 'frontend', repository: 'https://github.com/intent-driven-dev/url-shortener-fe.git',
+    revision: '9af081d85d52d010ae9ca3a87d339293044ed7b2', install: 'npm ci',
+    start: 'npm start', readiness: { url: 'http://127.0.0.1/health' } }
+] };
 
+export async function allocateRuntime(workspace) {
+  const reservations = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      const server = createServer();
+      reservations.push(server);
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    }
+    return { backendOrigin: `http://127.0.0.1:${reservations[0].address().port}`,
+      frontendOrigin: `http://127.0.0.1:${reservations[1].address().port}`,
+      storageDirectory: path.join(workspace, 'storage') };
+  } finally {
+    await Promise.all(reservations.filter(s => s.listening).map(s => new Promise(resolve => s.close(resolve))));
+  }
+}
+export function runtimeEnvironment(id, runtime) {
+  if (id === 'backend') return { PORT: new URL(runtime.backendOrigin).port,
+    PUBLIC_LINK_ORIGIN: runtime.frontendOrigin, STORAGE_DIR: runtime.storageDirectory };
+  if (id === 'frontend') return { PORT: new URL(runtime.frontendOrigin).port, BACKEND_ORIGIN: runtime.backendOrigin };
+  return {};
+}
 const helper = fileURLToPath(new URL('./owned-process.mjs', import.meta.url));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export function stateDirectory(root = specificationRoot) {
@@ -53,7 +76,7 @@ export async function awaitReady(check, failed = async () => false) {
   throw Error(`Readiness timeout: ${check.url}`);
 }
 async function exists(file) { try { await access(file); return true; } catch { return false; } }
-function owned(p) {
+export function owned(p) {
   const result = spawnSync('ps', ['-p', String(p.pid), '-o', 'command='], { encoding: 'utf8' });
   if (result.error || (result.status !== 0 && result.status !== 1)) throw Error('Cannot verify process ownership with ps; refusing to signal processes');
   return result.stdout.includes(helper) && result.stdout.includes(p.token);
@@ -63,12 +86,18 @@ async function terminate(p) {
   try { process.kill(-p.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   await sleep(300);
   if (owned(p)) try { process.kill(-p.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  for (let i = 0; i < 50 && owned(p); i++) await sleep(20);
+  if (owned(p)) throw Error('Owned process did not exit after termination');
 }
 export async function stop(root = specificationRoot) {
   const dir = stateDirectory(root); const file = path.join(dir, 'state.json');
   if (!await exists(file)) return;
   const state = JSON.parse(await readFile(file, 'utf8'));
-  for (const p of [...state.processes].reverse()) await terminate(p);
+  for (const p of [...state.processes].reverse()) {
+    await terminate(p);
+    p.stoppedAt ||= new Date().toISOString();
+  }
+  if (state.runtime && await exists(state.runtime.storageDirectory + '.offline')) await rename(state.runtime.storageDirectory + '.offline', state.runtime.storageDirectory);
   state.stoppedAt = new Date().toISOString();
   await writeFile(path.join(state.workspace, 'startup.json'), JSON.stringify(state, null, 2));
   await unlink(file);
@@ -92,8 +121,11 @@ export async function start(config = application, root = specificationRoot) {
   try {
     if (await exists(path.join(dir, 'state.json'))) throw Error('Harness state already exists. From verification/, run npm run app:stop before starting again.');
     state = { workspace: await mkdtemp(path.join(tmpdir(), 'app-checkout-')), startedAt: new Date().toISOString(), processes: [], components: [] };
+    if (config.allocateRuntime) state.runtime = await allocateRuntime(state.workspace);
     await save(); process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
-    for (const c of config.components) {
+    for (const configured of config.components) {
+      const c = { ...configured, env: { ...configured.env, ...(state.runtime ? runtimeEnvironment(configured.id, state.runtime) : {}) },
+        readiness: state.runtime ? { ...configured.readiness, url: state.runtime[configured.id + 'Origin'] + '/health' } : configured.readiness };
       if (interrupted) onSignal();
       const checkout = path.join(state.workspace, c.id);
       command('git', ['clone', '--no-checkout', '--', c.repository, checkout]);
@@ -115,21 +147,28 @@ export async function start(config = application, root = specificationRoot) {
           return { record, exitFile };
         } finally { await log.close(); }
       }
-      const installation = await launch('install', c.install);
-      const deadline = Date.now() + (c.installTimeoutMs ?? 300000);
-      while (!await exists(installation.exitFile)) {
-        if (interrupted) onSignal();
-        if (Date.now() >= deadline) throw Error(`${c.id}: dependency installation timed out`);
-        await sleep(50);
+      async function runPhase(phase, cmd) {
+        const operation = await launch(phase, cmd);
+        const deadline = Date.now() + (c.installTimeoutMs ?? 300000);
+        while (!await exists(operation.exitFile)) {
+          if (interrupted) onSignal();
+          if (Date.now() >= deadline) throw Error(`${c.id}: ${phase} timed out`);
+          await sleep(50);
+        }
+        const result = JSON.parse(await readFile(operation.exitFile, 'utf8'));
+        await terminate(operation.record);
+        operation.record.stoppedAt = new Date().toISOString();
+        await save();
+        if (result.code !== 0) throw Error(`${c.id}: ${phase === 'install' ? 'dependency installation' : phase} failed; see ${phase} log`);
       }
-      const installResult = JSON.parse(await readFile(installation.exitFile, 'utf8'));
-      await terminate(installation.record);
-      if (installResult.code !== 0) throw Error(`${c.id}: dependency installation failed; see install log`);
+      await runPhase('install', c.install);
+      if (c.provision) await runPhase('provision', c.provision);
       if (interrupted) onSignal();
       const { exitFile } = await launch('start', c.start);
-      state.components.push({ id: c.id, repository: c.repository, requestedRevision: c.revision || null, revision, checkout, cwd, install: c.install, start: c.start, readiness: c.readiness });
+      state.components.push({ id: c.id, repository: c.repository, requestedRevision: c.revision || null, revision, checkout, cwd, install: c.install, start: c.start, provision: c.provision, readiness: c.readiness });
       await save();
       await awaitReady(c.readiness, async () => interrupted || await exists(exitFile));
+      state.components.at(-1).readyAt = new Date().toISOString(); await save();
     }
     state.readyAt = new Date().toISOString(); await save();
     console.log(`Application ready. Revisions, commands and logs: ${state.workspace}`); return state;
@@ -140,6 +179,57 @@ export async function start(config = application, root = specificationRoot) {
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
     await lock.close(); await unlink(path.join(dir, 'start.lock'));
   }
+}
+export async function readState(root = specificationRoot) {
+  return JSON.parse(await readFile(path.join(stateDirectory(root), 'state.json'), 'utf8'));
+}
+async function saveState(state, root) {
+  const data = JSON.stringify(state, null, 2);
+  await writeFile(path.join(stateDirectory(root), 'state.json'), data, { mode: 0o600 });
+  await writeFile(path.join(state.workspace, 'startup.json'), data, { mode: 0o600 });
+}
+export async function stopBackend(root = specificationRoot) {
+  const state = await readState(root);
+  const record = state.processes.findLast(p => p.id === 'backend' && p.phase === 'start' && !p.stoppedAt);
+  if (!record || !owned(record)) throw Error('Backend ownership could not be verified; refusing restart control');
+  await terminate(record);
+  if (owned(record)) throw Error('Backend process did not exit');
+  record.stoppedAt = new Date().toISOString();
+  await saveState(state, root);
+}
+export async function startBackend(root = specificationRoot) {
+  const state = await readState(root);
+  if (state.processes.some(p => p.id === 'backend' && p.phase === 'start' && !p.stoppedAt)) throw Error('Backend is already recorded as running');
+  const c = state.components.find(c => c.id === 'backend');
+  if (!c || !state.runtime) throw Error('Missing backend restart configuration');
+  const token = randomUUID();
+  const exitFile = path.join(state.workspace, `backend-restart-${token}-exit.json`);
+  const log = await open(path.join(state.workspace, 'backend-start.log'), 'a');
+  try {
+    const child = spawn(process.execPath, [helper, token, exitFile, c.start], {
+      cwd: c.cwd, env: { ...process.env, ...runtimeEnvironment('backend', state.runtime) },
+      detached: true, stdio: ['ignore', log.fd, log.fd] });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref();
+    state.processes.push({ id: 'backend', phase: 'start', pid: child.pid, token, restartedAt: new Date().toISOString() });
+    await saveState(state, root);
+    await awaitReady(c.readiness, async () => await exists(exitFile));
+  } finally { await log.close(); }
+}
+export async function disableStorage(root = specificationRoot) {
+  const state = await readState(root);
+  const directory = state.runtime?.storageDirectory;
+  if (!directory || path.dirname(directory) !== state.workspace) throw Error('Storage is not owned by this run');
+  if (await exists(directory + '.offline')) throw Error('Storage already offline');
+  await rename(directory, directory + '.offline');
+  state.storageOfflineAt = new Date().toISOString(); await saveState(state, root);
+}
+export async function restoreStorage(root = specificationRoot) {
+  const state = await readState(root);
+  const directory = state.runtime?.storageDirectory;
+  if (!directory || path.dirname(directory) !== state.workspace) throw Error('Storage is not owned by this run');
+  if (await exists(directory + '.offline')) await rename(directory + '.offline', directory);
+  state.storageRestoredAt = new Date().toISOString(); await saveState(state, root);
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {

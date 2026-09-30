@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { parse } from 'yaml';
 import { compose, feature, generate } from '../scripts/specs.mjs';
 import { inspectReport, runAcceptance } from '../scripts/acceptance.mjs';
-import { start, stop, stateDirectory, awaitReady, validateConfig } from '../scripts/app.mjs';
+import { start, stop, stateDirectory, awaitReady, validateConfig, allocateRuntime, readState, stopBackend, startBackend, owned, disableStorage, restoreStorage } from '../scripts/app.mjs';
 import { specificationRoot as root, verificationRoot } from '../scripts/paths.mjs';
 const temp = () => mkdtemp(path.join(tmpdir(), 'app-sdd-test-'));
 const requirement = (name, scenario = 'example', steps = 'Given a precondition\nWhen an action occurs\nThen a result is visible') => `### Requirement: ${name}\nThe system SHALL work.\n\n#### Scenario: ${scenario}\n\n\`\`\`gherkin\n${steps}\n\`\`\`\n`;
@@ -145,7 +145,7 @@ test('temporary checkouts, pinned/default revisions, real passing API acceptance
   await assert.rejects(start({ components: [{ ...component, install: 'node -e "process.exit(2)"' }] }, owner), /installation failed/);
   await assert.rejects(start({ components: [component, { ...component, id: 'second', install: 'node -e "process.exit(2)"' }] }, owner), /installation failed/);
   await assert.rejects(fetch(url));
-  await assert.rejects(start({ components: [{ ...component, install: 'node -e "setInterval(() => {}, 1000)"', installTimeoutMs: 100 }] }, owner), /installation timed out/);
+  await assert.rejects(start({ components: [{ ...component, install: 'node -e "setInterval(() => {}, 1000)"', installTimeoutMs: 100 }] }, owner), /install timed out/);
   await assert.rejects(access(path.join(stateDirectory(owner), 'state.json')));
 });
 
@@ -245,10 +245,11 @@ test('supporting skills have valid metadata, accessible assets and explicit sche
   }
 });
 
-test('unconfigured command guards give actionable errors', () => {
+test('empty-spec CLI and unconfigured configuration guards give actionable errors', () => {
+  assert.throws(() => validateConfig({ components: [] }), /unconfigured.*verification\/scripts\/app.mjs/);
   for (const [script, args, message] of [
     ['acceptance.mjs', [], /empty.*Author spec.md/],
-    ['app.mjs', ['start'], /unconfigured.*verification\/scripts\/app.mjs/]
+
   ]) {
     const run = spawnSync(process.execPath, [path.join(verificationRoot, 'scripts', script), ...args], { cwd: root, encoding: 'utf8' });
     assert.equal(run.status, 1); assert.match(run.stderr, message);
@@ -286,4 +287,52 @@ test('every Examples block supplies placeholders in steps, tables and doc string
   }
   assert.throws(() => extract(steps + examples + 'Examples:\n | value |\n | four |\n'), /Missing Examples columns/);
   assert.equal(extract(steps + examples + examples).executions, 2);
+});
+
+
+test('runtime persists origins and storage, ownership rejects foreign restart, cleanup restores outage', async () => {
+  const repository = await temp(); const owner = await temp();
+  await put(repository, 'server.cjs', `require('node:http').createServer((req,res) => res.end('ready')).listen(Number(process.env.PORT), '127.0.0.1');`);
+  git(repository, 'init'); git(repository, 'add', '.');
+  git(repository, '-c', 'user.name=Harness Test', '-c', 'user.email=harness@example.invalid', 'commit', '-m', 'fixture');
+  const revision = git(repository, 'rev-parse', 'HEAD');
+  const component = id => ({ id, repository, revision, install: 'node --version', start: 'node server.cjs', readiness: { url: 'http://127.0.0.1/health', timeoutMs: 3000 } });
+  let state;
+  try {
+    state = await start({ allocateRuntime: true, components: [component('backend'), component('frontend')] }, owner);
+    assert.notEqual(state.runtime.backendOrigin, state.runtime.frontendOrigin);
+    assert.deepEqual((await readState(owner)).runtime, state.runtime);
+    assert.deepEqual(JSON.parse(await readFile(path.join(state.workspace, 'startup.json'))).runtime, state.runtime);
+    await mkdir(state.runtime.storageDirectory);
+    await writeFile(path.join(state.runtime.storageDirectory, 'retained'), 'unchanged');
+    await assert.rejects(startBackend(owner), /already recorded/);
+    const active = state.processes.findLast(p => p.id === 'backend' && p.phase === 'start');
+    const token = active.token;
+    active.token = 'foreign-owner';
+    await writeFile(path.join(stateDirectory(owner), 'state.json'), JSON.stringify(state));
+    await assert.rejects(stopBackend(owner), /ownership/);
+    assert.equal((await fetch(state.runtime.backendOrigin)).status, 200);
+    active.token = token;
+    await writeFile(path.join(stateDirectory(owner), 'state.json'), JSON.stringify(state));
+    await stopBackend(owner);
+    assert.equal(owned(active), false);
+    await assert.rejects(fetch(state.runtime.backendOrigin));
+    await startBackend(owner);
+    const restarted = await readState(owner);
+    assert.deepEqual(restarted.runtime, state.runtime);
+    assert.ok(restarted.processes.at(-1).restartedAt);
+    assert.equal((await fetch(state.runtime.backendOrigin)).status, 200);
+    await disableStorage(owner);
+    await assert.rejects(access(state.runtime.storageDirectory));
+    await restoreStorage(owner);
+    assert.equal(await readFile(path.join(state.runtime.storageDirectory, 'retained'), 'utf8'), 'unchanged');
+    await disableStorage(owner);
+  } finally { await stop(owner); }
+  assert.equal(await readFile(path.join(state.runtime.storageDirectory, 'retained'), 'utf8'), 'unchanged');
+  await assert.rejects(fetch(state.runtime.backendOrigin));
+  await assert.rejects(fetch(state.runtime.frontendOrigin));
+  await assert.rejects(readState(owner));
+  const evidence = JSON.parse(await readFile(path.join(state.workspace, 'startup.json')));
+  assert.ok(evidence.stoppedAt);
+  assert.ok(evidence.processes.every(p => p.stoppedAt && !owned(p)));
 });

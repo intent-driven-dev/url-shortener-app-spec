@@ -9,7 +9,8 @@
     "app:start": "node scripts/app.mjs start",
     "app:stop": "node scripts/app.mjs stop",
     "test": "node scripts/acceptance.mjs",
-    "test:harness": "node --test test/*.test.mjs"
+    "test:harness": "node --test test/*.test.mjs",
+    "app:verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@cucumber/cucumber": "^12.0.0",
