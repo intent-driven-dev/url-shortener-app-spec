@@ -15,8 +15,8 @@ Use [.agents/skills/acceptance-testing/SKILL.md](../../../.agents/skills/accepta
 
 ## 1. Prepare executable acceptance
 
-- [ ] 1.1 Extract canonical specs composed with only the `url-creation` deltas and implement every JavaScript UI/API setup, action, and assertion for all four authoritative scenarios. Verify every binding, including downstream steps, resolves unambiguously. Use live public interfaces; no mocks, storage writes, seed scripts, test-only endpoints, placeholders, empty assertions, or forced failures. Include Design boundary checks for invalid input, unknown codes, full destination preservation, readiness/connectivity and storage failures, and restart durability; resolve storage-specific controls from delivered instructions after the gate.
-- [ ] 1.2 Run `npm test -- --change url-creation` and retain genuine initial failing reports and command evidence in `verification.md`. Label connection failures as unavailable-application evidence, not exercised behavior; downstream skips are allowed only in this initial run with complete bindings. Investigate unexpected success without manufacturing failure.
+- [x] 1.1 Extract canonical specs composed with only the `url-creation` deltas and implement every JavaScript UI/API setup, action, and assertion for all four authoritative scenarios. Verify every binding, including downstream steps, resolves unambiguously. Use live public interfaces; no mocks, storage writes, seed scripts, test-only endpoints, placeholders, empty assertions, or forced failures. Include Design boundary checks for invalid input, unknown codes, full destination preservation, readiness/connectivity and storage failures, and restart durability; resolve storage-specific controls from delivered instructions after the gate.
+- [x] 1.2 Run `npm test -- --change url-creation` and retain genuine initial failing reports and command evidence in `verification.md`. Label connection failures as unavailable-application evidence, not exercised behavior; downstream skips are allowed only in this initial run with complete bindings. Investigate unexpected success without manufacturing failure.
 
 ## 2. Check component delivery
 

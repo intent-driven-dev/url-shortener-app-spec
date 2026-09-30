@@ -48,7 +48,14 @@ acceptance requires every scenario and step to pass. Reviewing real assertions a
 rejecting intentionally manufactured failure remain the apply agent's responsibility.
 
 Generated features, binding reports, execution logs and summaries are disposable
-under `.acceptance/<run>/`; `spec.md` remains authoritative. Copy durable commands,
+under `.acceptance/<run>/`; `spec.md` remains authoritative.
+Each run also includes Cucumber's standard `bindings.html` (dry-run binding
+validation) and `results.html` (execution). Undefined or ambiguous bindings appear
+in binding validation; bound steps appear skipped during a dry run. Execution
+distinguishes passed, failed, and skipped steps. A skipped step is not evidence
+that its definition is missing.
+
+Copy durable commands,
 results, report locations, revisions and delivery evidence into the feature's
 `openspec/changes/<name>/verification.md` at the repository root. Reports flag connection failures as unavailable-application
 evidence, which does not demonstrate that behavior was exercised. Reports may

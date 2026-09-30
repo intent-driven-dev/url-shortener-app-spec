@@ -30,7 +30,8 @@ export async function runAcceptance(root = specificationRoot, change, harnessRoo
   const bin = path.join(harnessRoot, 'node_modules/@cucumber/cucumber/bin/cucumber.js');
   async function execute(dry) {
     const report = path.join(runDir, dry ? 'bindings.json' : 'results.json');
-    const args = [bin, '--config', path.relative(harnessRoot, config), '--format', `json:${path.relative(harnessRoot, report)}`, '--format', 'progress'];
+    const html = path.join(runDir, dry ? 'bindings.html' : 'results.html');
+    const args = [bin, '--config', path.relative(harnessRoot, config), '--format', `json:${path.relative(harnessRoot, report)}`, '--format', `html:${path.relative(harnessRoot, html)}`, '--format', 'progress'];
     if (dry) args.push('--dry-run');
     const result = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, args, { cwd: harnessRoot, env: process.env });
