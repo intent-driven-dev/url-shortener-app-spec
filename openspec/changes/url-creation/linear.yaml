@@ -2,3 +2,12 @@ issue:
   id: 60ee7b72-2f36-450b-ad95-d39a9bb7dd3a
   identifier: INT-54
   url: https://linear.app/intent-driven-dev/issue/INT-54/url-creation
+components:
+  backend:
+    id: a2f50d54-4349-42d9-862e-c90de007c8d6
+    identifier: INT-58
+    url: https://linear.app/intent-driven-dev/issue/INT-58/implement-url-creation-backend-backend
+  frontend:
+    id: 408f599e-d275-4f69-b45d-4e80cf0c0eba
+    identifier: INT-59
+    url: https://linear.app/intent-driven-dev/issue/INT-59/implement-url-creation-frontend-frontend
