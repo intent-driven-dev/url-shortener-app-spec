@@ -47,7 +47,7 @@ export function parseSpec(text, delta = false) {
 }
 export function compose(base, delta) {
   const result = new Map();
-  for (const r of parseSpec(base).records) {
+  for (const r of (base instanceof Map ? [...base].map(([name, body]) => ({ name, body })) : parseSpec(base).records)) {
     if (result.has(r.name)) throw Error(`Duplicate requirement: ${r.name}`);
     result.set(r.name, r.body);
   }
@@ -105,19 +105,27 @@ export function feature(capability, requirements) {
   }
   return { output, count, executions: pickles.length };
 }
-export async function generate(root, change, out) {
-  if (change && (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(change) || change === 'archive')) throw Error('Select one active change name, not a path/archive');
+export async function generate(root, out) {
   const canonical = path.join(root, 'openspec/specs');
-  const deltaRoot = change && path.join(root, 'openspec/changes', change, 'specs');
-  const baseFiles = await files(canonical); const deltaFiles = deltaRoot ? await files(deltaRoot) : [];
-  if (change && !deltaFiles.length) throw Error(`No delta specs for active change ${change}`);
-  const bases = new Map(await Promise.all(baseFiles.map(async f => [path.relative(canonical, f), await readFile(f, 'utf8')])));
-  const deltas = new Map(await Promise.all(deltaFiles.map(async f => [path.relative(deltaRoot, f), await readFile(f, 'utf8')])));
+  const changesRoot = path.join(root, 'openspec/changes');
+  const baseFiles = await files(canonical);
+  const requirements = new Map(await Promise.all(baseFiles.map(async f =>
+    [path.relative(canonical, f), compose(await readFile(f, 'utf8'), '')])));
+  let changes;
+  try { changes = await readdir(changesRoot, { withFileTypes: true }); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; changes = []; }
+  for (const change of changes.filter(entry => entry.isDirectory() && entry.name !== 'archive').sort((a, b) => a.name.localeCompare(b.name))) {
+    const deltaRoot = path.join(changesRoot, change.name, 'specs');
+    for (const file of await files(deltaRoot)) {
+      const relative = path.relative(deltaRoot, file);
+      requirements.set(relative, compose(requirements.get(relative) || '', await readFile(file, 'utf8')));
+    }
+  }
   await rm(out, { recursive: true, force: true }); await mkdir(out, { recursive: true });
   let count = 0;
-  for (const file of [...new Set([...bases.keys(), ...deltas.keys()])].sort()) {
+  for (const file of [...requirements.keys()].sort()) {
     const capability = path.dirname(file);
-    const generated = feature(capability, compose(bases.get(file) || '', deltas.get(file) || ''));
+    const generated = feature(capability, requirements.get(file));
     if (generated.count) {
       const dest = path.join(out, capability, 'spec.feature');
       await mkdir(path.dirname(dest), { recursive: true }); await writeFile(dest, generated.output); count += generated.executions;

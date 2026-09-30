@@ -16,11 +16,11 @@ export function inspectReport(report, bindingOnly = false) {
   if (bad.length) throw Error(`${bindingOnly ? 'Binding validation' : 'Acceptance'} failed: ${bad.map(s => `${s.name || 'hook'} (${s.result?.status || 'missing'})`).join('; ')}`);
   return { scenarios: scenarios.length, steps: steps.length };
 }
-export async function runAcceptance(root = specificationRoot, change, harnessRoot = verificationRoot) {
+export async function runAcceptance(root = specificationRoot, harnessRoot = verificationRoot) {
   const runDir = path.join(harnessRoot, '.acceptance', new Date().toISOString().replaceAll(':', '-') + '-' + process.pid);
   await mkdir(runDir, { recursive: true });
   const features = path.join(runDir, 'features');
-  const count = await generate(root, change, features);
+  const count = await generate(root, features);
   const config = path.join(runDir, 'cucumber.json');
   // An explicit configuration prevents local profiles, tag filters or retries hiding scenarios.
   await writeFile(config, JSON.stringify({ default: {
@@ -56,13 +56,13 @@ export async function runAcceptance(root = specificationRoot, change, harnessRoo
   const log = (actual.result.stdout || '') + (actual.result.stderr || '');
   await writeFile(path.join(runDir, 'execution.log'), log); console.log(log);
   const unavailable = /ECONNREFUSED|ENOTFOUND|fetch failed|ERR_CONNECTION_REFUSED/.test(log + await readFile(actual.report, 'utf8'));
-  await writeFile(path.join(runDir, 'summary.json'), JSON.stringify({ change: change || null, expectedScenarios: count, planned, exitCode: actual.result.status, evidence: unavailable ? 'unavailable-application (does not demonstrate exercised behavior)' : 'execution; inspect report for behavior evidence', command: `cd verification && npm test${change ? ` -- --change ${change}` : ''}`, report: actual.report }, null, 2));
+  await writeFile(path.join(runDir, 'summary.json'), JSON.stringify({ expectedScenarios: count, planned, exitCode: actual.result.status, evidence: unavailable ? 'unavailable-application (does not demonstrate exercised behavior)' : 'execution; inspect report for behavior evidence', command: 'cd verification && npm test', report: actual.report }, null, 2));
   const passed = inspectReport(JSON.parse(await readFile(actual.report, 'utf8')));
   if (actual.result.status !== 0 || passed.scenarios !== planned.scenarios || passed.steps !== planned.steps) throw Error('Incomplete or failed acceptance execution');
   return passed;
 }
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  if (args.length && (args.length !== 2 || args[0] !== '--change')) { console.error('Usage (from verification/): npm test -- [--change <active-name>]'); process.exitCode = 1; }
-  else try { await runAcceptance(specificationRoot, args[1]); } catch (e) { console.error(e.message); process.exitCode = 1; }
+  if (args.length) { console.error('Usage (from verification/): npm test'); process.exitCode = 1; }
+  else try { await runAcceptance(specificationRoot); } catch (e) { console.error(e.message); process.exitCode = 1; }
 }

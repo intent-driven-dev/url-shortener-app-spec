@@ -1,124 +1,225 @@
-# Acceptance verification
+# Run the integrated acceptance tests manually
 
-Node/Cucumber is verification tooling; components may use any implementation language.
+```sh
+# From the repository root, after the first-time setup below:
+cd verification
+npm run app:start && npm run app:verify
+```
 
-## Commands
+This starts both services, generates features, runs Cucumber and boundary checks,
+and shuts down automatically—even when verification fails. The commands print
+report locations: open `results.html` in the acceptance report directory and
+`integration.json` at the printed integration and cleanup evidence path.
 
-Requires Node.js 22+ and Git. Startup/process cleanup supports macOS/Linux (POSIX
-process groups and `ps`); Windows needs a POSIX environment.
+
+Follow the four steps below to test the frontend and backend together. Run all
+commands from `verification/`, in the same terminal.
+
+## Before your first run
+
+You need Node.js 22+, Git, and macOS/Linux (or a POSIX environment on Windows).
+Network access is needed to download dependencies and component repositories;
+the browser scenarios also navigate to the external destination URL.
+
+From the repository root:
 
 ```sh
 cd verification
 npm ci
-npm run test:harness
-npm run app:start
-npm run app:verify # url-creation: acceptance + boundaries + guaranteed app:stop
-# Or run acceptance manually with FRONTEND_ORIGIN from startup.json, then app:stop.
+npx playwright install chromium
 ```
 
-All paths below are relative to `verification/` unless stated otherwise.
-Specifications are read from the repository root, independently of the caller’s
-working directory. Startup state is also keyed by that repository root, so start
-and stop use the same identity from any working directory.
+## 1. Where are the Gherkin feature files generated?
 
-`npm test` without `--change` uses canonical specifications only. With `--change`,
-it composes those specs with that one active change; other changes and archives
-are excluded. ADDED adds, MODIFIED replaces the entire requirement, REMOVED removes,
-and RENAMED renames. Authors must retain unaffected scenarios in full MODIFIED
-requirements. Canonical requirements outside the delta remain intact.
+**`scripts/specs.mjs` extracts the Gherkin. `npm test` calls it automatically on
+every run**, before invoking Cucumber. There is no separate extraction npm command.
 
-A `#### Scenario: name` heading supplies the scenario name; exactly one fenced
-`gherkin` block supplies its steps. An `Examples:` section makes it an outline.
-Do not repeat Feature or Scenario headers inside fences. Tables and doc strings
-are supported. Every Examples block must supply columns for placeholders in steps,
-tables and doc strings. Empty scenarios/outlines, malformed rename entries and
-unsupported delta operation sections are rejected. Renames are read only from
-RENAMED Requirements outside fenced content and apply before other operations.
+The flow is:
 
-Implement JavaScript step definitions in `acceptance/steps/*.mjs` (or ESM `.js`),
-using `@cucumber/cucumber`, real HTTP/browser interactions, and assertions. Read
-endpoints from environment variables appropriate to the accepted Design. Browser
-acceptance requires a separately installed browser driver; Cucumber does not provide
-one. Install the chosen driver and its required browsers when browser acceptance is
-needed (see [Cucumber browser automation](https://cucumber.io/docs/guides/browser-automation/)). No generic
-product steps, stub assertions, forced failures or pending placeholders are supplied.
-The harness validates every binding with a full dry run before executing anything.
-A failing earlier step may skip later bound steps in the initial failure run; final
-acceptance requires every scenario and step to pass. Reviewing real assertions and
-rejecting intentionally manufactured failure remain the apply agent's responsibility.
+```text
+openspec/specs/**/spec.md + openspec/changes/<active>/specs/**/spec.md
+                                        (sources, excluding archive)
+  → scripts/specs.mjs                    (extracts Gherkin scenarios)
+  → .acceptance/<run>/features/**/*.feature
+  → Cucumber.js                         (validates bindings, then runs tests)
+```
 
-Generated features, binding reports, execution logs and summaries are disposable
-under `.acceptance/<run>/`; `spec.md` remains authoritative.
-Each run also includes Cucumber's standard `bindings.html` (dry-run binding
-validation) and `results.html` (execution). Undefined or ambiguous bindings appear
-in binding validation; bound steps appear skipped during a dry run. Execution
-distinguishes passed, failed, and skipped steps. A skipped step is not evidence
-that its definition is missing.
+For the current URL creation specification, the source is
+[`../openspec/specs/url-creation/spec.md`](../openspec/specs/url-creation/spec.md)
+and the generated file is `.acceptance/<run>/features/url-creation/spec.feature`.
+Edit the source specification, not the generated file. The next `npm test` reads
+your current local specs again; it does not fetch specifications from Git.
 
-Copy durable commands,
-results, report locations, revisions and delivery evidence into the feature's
-`openspec/changes/<name>/verification.md` at the repository root. Reports flag connection failures as unavailable-application
-evidence, which does not demonstrate that behavior was exercised. Reports may
-contain application data; do not commit secrets.
+Every run uses the effective spec: canonical specs plus delta specs from every
+direct active change folder under `openspec/changes/`. Archives and folders
+without specs are ignored. With no active changes, canonical specs alone are used.
+Active changes are expected to be compatible with each other and canonical specs.
 
-## Application startup configuration
+## 2. Start both the frontend and backend
 
-The `application` section in `scripts/app.mjs` pins the published URL creation
-deliveries. It allocates distinct loopback ports and run-isolated storage. After the delivery gate passes, populate it from Design,
-the component registry and delivered repository instructions. Each component has:
+```sh
+npm run app:start
+```
 
-- Stable `id`, user-provided `repository`, and delivered `revision` when known.
-- `install` and `start` shell commands, optional checkout-relative `cwd`, and `env`.
-- HTTP `readiness.url`, expected `status` (default 200), and `timeoutMs` (default 60000).
+This runs [`scripts/app.mjs`](scripts/app.mjs). It clones the configured component
+revisions into temporary checkouts, installs dependencies, initializes backend
+storage, starts the backend followed by the frontend, and waits for both to be
+ready. You do not need to start either component separately.
 
-List components in dependency order. Explicitly use a no-op install command if the
-delivered repository needs no dependencies. Environment values are passed to the
-component but not written into startup metadata; avoid putting secrets in commands.
-Tests can also target an already-running application; `npm test` does not start or
-stop it.
+It prints:
 
-`app:start` clones fresh temporary checkouts, resolves pinned revisions or the remote
-default branch to exact commits, installs, starts and awaits readiness. Temporary
-state, checkouts and logs stay outside tracked source. Startup prints their location
-and retains `startup.json` evidence after stopping. Partial failures clean up owned
-process groups. `app:stop` checks an ownership token before signaling each group;
-it leaves externally managed processes alone. Call it after verification, including
-failed verification. A leftover startup lock after a hard kill requires inspecting
-the printed temporary state and confirming no startup is active before removing
-that lock. Temporary evidence/checkouts can be removed after recording needed results.
+```text
+Application ready. Revisions, commands and logs: <temporary-directory>
+```
 
-`npm test -- --change url-creation` selects the four application scenarios.
-Without a selected change, empty canonical specifications still fail explicitly.
-`npm run test:harness` tests infrastructure using temporary fixture repositories and
-HTTP services; it is not application acceptance and makes no Linear changes.
+That directory contains `startup.json`, `backend-start.log`, and
+`frontend-start.log`. The services keep running after the command finishes.
+Ports are allocated for this run; `startup.json` records both service URLs under
+`runtime.frontendOrigin` and `runtime.backendOrigin`.
 
-Acceptance verifies accepted integration agreements, including addressing, browser
-origins, API/public-link URLs, CORS/credentials and readiness. Delivered defaults
-must conform to those agreements; resolve internal configuration after delivery.
-Do not change specs, drop scenarios or weaken assertions to make acceptance pass.
-Correct component behavior in its owning repository, obtain a new delivery and
-repeat the delivery gate and integrated acceptance. Binding/harness defects may be
-fixed while preserving the specified expectations.
+Startup uses the pinned revisions in `scripts/app.mjs`, not your local component
+working copies or necessarily the latest remote commits.
 
-## URL creation live verification
+## 3. Verify everything and shut down automatically
 
-Refresh the Linear delivery gate before startup. Backend starts first with `npm ci`,
-`npm run storage:init` once and `npm start`; frontend uses `npm ci` and `npm start`.
-`startup.json` retains `runtime.frontendOrigin`, `runtime.backendOrigin`, and
-`runtime.storageDirectory`, exact revisions, checkouts, commands and readiness times.
-Only these nonsecret runtime inputs are persisted; arbitrary environment values are not.
+```sh
+npm run app:verify
+```
 
-After `npm run app:start`, run `npm run app:verify`. It reads the same persisted runtime,
-runs `npm test -- --change url-creation` with the allocated frontend origin, then the
-additional live boundary suite. It restores storage and invokes `npm run app:stop`
-in a finally block, including after failures. Cucumber retains standard HTML reports;
-`.acceptance/<timestamp>-integration/integration.json` records boundary checks and cleanup.
-External navigation errors fail verification.
+The wrapper reads the saved frontend URL and calls plain `npm test`, then runs
+the boundary checks. It restores storage and stops both services in a finally
+block, including when verification fails. Failures return a nonzero exit code.
 
-For manual boundary execution, set `FRONTEND_ORIGIN`, `BACKEND_ORIGIN`, and
-`ACCEPTANCE_CONTROLS=./acceptance/controls.mjs`, then run
-`node acceptance/boundaries.mjs`. Stop the services afterward, including after failures.
-Restart controls verify ownership before stopping the backend and retain its port
-and storage. Storage outages rename the directory to its sibling `.offline` path;
-restoration never edits mappings or reinitializes storage. `app:stop` also restores
-a leftover outage and records stopped processes in retained startup evidence.
+`npm test` runs [`scripts/acceptance.mjs`](scripts/acceptance.mjs), which:
+
+1. Generates fresh feature files from the OpenSpec specifications.
+2. Runs Cucumber.js with `--dry-run` to check that every step has a matching definition.
+3. Runs Cucumber.js for real using `acceptance/steps/`, with Playwright opening
+   Chromium and exercising the frontend and backend together.
+
+If binding validation fails, execution does not start. Successful execution
+requires all scenarios and steps to pass. `npm test` leaves both services running
+when called directly. The `app:verify` wrapper handles shutdown for this walkthrough.
+
+## 4. Find the reports
+
+The test command prints the exact report directory:
+
+```text
+Acceptance reports: <path>/verification/.acceptance/<run>
+```
+
+Open `results.html` in your browser to see the test results.
+
+| File inside that run directory | What it contains |
+| --- | --- |
+| `results.html` | Cucumber execution results: passed, failed, and skipped steps |
+| `execution.log` | Execution output and error details |
+| `bindings.html` / `bindings.log` | Step-binding validation results and output |
+| `features/` | The generated `.feature` files used for this run |
+| `results.json` / `summary.json` | Machine-readable execution results and summary |
+
+If binding validation fails, start with `bindings.html` and `bindings.log`;
+execution reports will not exist yet. Steps shown as skipped in the binding
+report are normal for a dry run. A skipped execution step may follow an earlier
+failure; it does not necessarily mean its definition is missing.
+
+The wrapper also prints the exact `integration.json` path. That report records
+boundary checks, acceptance exit status, and cleanup evidence. Shutdown is
+automatic; test reports, temporary checkouts, service logs, and `startup.json`
+remain available afterward. If you only started the services without verifying,
+run `npm run app:stop` to stop them manually.
+
+---
+
+## Reference for maintaining the verification tooling
+
+The sections below are for changing specs, configuring deliveries, or running
+additional checks. They are not prerequisites for the manual walkthrough.
+
+### Specification and step-definition rules
+
+`npm test` composes canonical specs with all active change specs: ADDED adds a requirement, MODIFIED replaces the entire
+requirement, REMOVED removes it, and RENAMED renames it before other operations.
+Keep unaffected scenarios in full MODIFIED requirements. Canonical requirements
+outside the delta remain intact. An empty suite fails explicitly.
+
+Each `#### Scenario: name` heading supplies the scenario name; exactly one fenced
+`gherkin` block supplies its steps. Do not repeat Feature or Scenario headers
+inside fences. `Examples:` makes an outline; each Examples block must provide
+columns for placeholders in steps, tables, and doc strings. Empty scenarios,
+malformed renames, and unsupported delta operations are rejected. Renames are
+read from RENAMED Requirements outside fenced content.
+
+Implement step definitions in `acceptance/steps/*.mjs` or ESM `.js`, using
+`@cucumber/cucumber`, real HTTP/browser interactions, and assertions. Do not use
+stub assertions, forced failures, or pending placeholders. Connection failures
+are marked as unavailable-application evidence, not exercised behavior.
+
+Generated files under `.acceptance/` are disposable; `spec.md` is authoritative.
+During delivery, record durable commands, results, report locations, revisions,
+and delivery evidence in the active change's
+`openspec/changes/<name>/verification.md`. Reports can contain application data;
+do not commit secrets.
+
+### Component startup configuration
+
+The `application` section in `scripts/app.mjs` configures published deliveries.
+For a new delivery, refresh the Linear delivery gate before startup and populate
+configuration from the accepted Design, component registry, and delivered setup
+instructions. List components in dependency order with:
+
+- A stable `id`, user-provided `repository`, and delivered `revision` when known.
+- `install` and `start` shell commands, optional `provision`, checkout-relative
+  `cwd`, and `env`. Use an explicit no-op install command if none is needed.
+- HTTP `readiness.url`, expected `status` (default 200), and `timeoutMs`
+  (default 60000).
+
+Startup allocates distinct loopback ports and isolated storage. The backend runs
+`npm ci`, `npm run storage:init`, then `npm start`; the frontend runs `npm ci`
+and `npm start`. `startup.json` records exact revisions, checkouts, commands,
+readiness times, and the nonsecret runtime origins and storage directory.
+Arbitrary environment values are not persisted; avoid secrets in commands.
+
+Specification and startup-state paths are keyed to the repository root,
+independently of the caller's working directory. Temporary state, checkouts,
+and logs stay outside tracked source. Partial startup failures clean up owned
+process groups; stopping checks ownership before signaling processes.
+
+If a hard kill leaves a startup lock, inspect the reported state directory and
+confirm no startup is active before removing the lock. Remove temporary evidence
+and checkouts only after recording any needed results.
+
+To test an externally managed application, set `FRONTEND_ORIGIN` to its frontend
+URL and run `npm test`. Manage that application's lifecycle yourself.
+
+### Boundary checks
+
+`app:verify` runs these after Cucumber: readiness, invalid-input responses,
+redirect preservation, backend restart durability, and storage outage/recovery.
+
+Restart controls check ownership and retain backend port and storage. Storage
+outages rename the storage directory to its sibling `.offline` path; restoration
+does not edit mappings or reinitialize storage. External navigation errors fail
+the checks.
+
+The existing `app:verify` wrapper writes
+`.acceptance/<timestamp>-integration/integration.json`, restores storage, and
+calls `app:stop` in a finally block.
+
+### Harness maintenance and acceptance failures
+
+```sh
+npm run test:harness
+```
+
+This tests the verification infrastructure with temporary fixture repositories
+and HTTP services. It does not run application acceptance or change Linear.
+
+Application acceptance checks the accepted integration agreements, including
+origins, API/public-link URLs, CORS/credentials, and readiness. Correct component
+behavior in its owning repository, obtain a new delivery, and repeat the delivery
+gate and integrated acceptance. Do not drop scenarios or weaken assertions to
+make acceptance pass. Harness or binding defects may be fixed while preserving
+the specified expectations. Node/Cucumber is verification tooling; component
+implementations may use any language.

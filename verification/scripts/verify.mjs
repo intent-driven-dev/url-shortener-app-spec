@@ -22,8 +22,8 @@ try {
   report.workspace = state.workspace;
   report.runtime = state.runtime;
   report.components = state.components;
-  report.acceptanceCommand = 'npm test -- --change url-creation';
-  report.acceptanceExitCode = await npm(['test', '--', '--change', 'url-creation'], { ...process.env, FRONTEND_ORIGIN: state.runtime.frontendOrigin });
+  report.acceptanceCommand = 'npm test';
+  report.acceptanceExitCode = await npm(['test'], { ...process.env, FRONTEND_ORIGIN: state.runtime.frontendOrigin });
   try {
     await verifyBoundaries({ ...state.runtime, controls, onCheck: name => report.checks.push({ name, status: 'passed' }) });
     report.boundaries = 'passed';

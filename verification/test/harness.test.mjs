@@ -45,16 +45,28 @@ test('extraction keeps multiple scenarios, outlines, tables and doc strings; rej
   assert.throws(() => feature('bad', new Map([['bad', '#### Scenario: missing\nGiven nothing']])), /Gherkin block/);
 });
 
-test('generation includes canonical and only selected change, excludes archives and unrelated changes', async () => {
+test('generation uses canonical specs alone without active changes', async () => {
   const dir = await temp();
   await put(dir, 'openspec/specs/nested/a/spec.md', requirement('canonical'));
-  await put(dir, 'openspec/changes/selected/specs/b/spec.md', '## ADDED Requirements\n' + requirement('selected'));
-  await put(dir, 'openspec/changes/unrelated/specs/c/spec.md', '## ADDED Requirements\n' + requirement('unrelated'));
-  await put(dir, 'openspec/changes/archive/old/specs/d/spec.md', requirement('archived'));
-  assert.equal(await generate(dir, 'selected', path.join(dir, 'generated')), 2);
-  assert.deepEqual(await readdir(path.join(dir, 'generated')), ['b', 'nested']);
-  await assert.rejects(generate(dir, '../archive', path.join(dir, 'generated')), /active change/);
-  await assert.rejects(generate(await temp(), undefined, path.join(dir, 'empty')), /empty/);
+  assert.equal(await generate(dir, path.join(dir, 'generated')), 1);
+  assert.match(await readFile(path.join(dir, 'generated/nested/a/spec.feature'), 'utf8'), /canonical/);
+  await assert.rejects(generate(await temp(), path.join(dir, 'empty')), /empty/);
+});
+
+test('generation composes all compatible active changes and excludes archives and folders without specs', async () => {
+  const dir = await temp();
+  await put(dir, 'openspec/specs/a/spec.md', requirement('keep') + requirement('modify') + requirement('remove'));
+  await put(dir, 'openspec/changes/first/specs/a/spec.md', '## MODIFIED Requirements\n' + requirement('modify', 'replacement'));
+  await put(dir, 'openspec/changes/second/specs/a/spec.md', '## ADDED Requirements\n' + requirement('added') + '## REMOVED Requirements\n### Requirement: remove\n');
+  await put(dir, 'openspec/changes/second/specs/b/spec.md', '## ADDED Requirements\n' + requirement('new capability'));
+  await put(dir, 'openspec/changes/draft/proposal.md', 'No specs yet');
+  await put(dir, 'openspec/changes/archive/old/specs/a/spec.md', 'Invalid archived delta');
+  await put(dir, 'openspec/changes/archive/old/specs/archived/spec.md', requirement('archived'));
+  assert.equal(await generate(dir, path.join(dir, 'generated')), 4);
+  assert.deepEqual(await readdir(path.join(dir, 'generated')), ['a', 'b']);
+  const output = await readFile(path.join(dir, 'generated/a/spec.feature'), 'utf8');
+  for (const name of ['keep', 'modify — replacement', 'added']) assert.ok(output.includes(name));
+  assert.doesNotMatch(output, /remove|archived/);
 });
 
 test('report validation rejects empty, skipped, pending, undefined and ambiguous execution', () => {
@@ -78,22 +90,22 @@ async function acceptanceFixture(steps, scenarioSteps = 'Given a precondition\nW
 const definitions = `import { Given, When, Then } from '@cucumber/cucumber';\nimport assert from 'node:assert/strict';\n`;
 test('Cucumber validates downstream bindings before running any steps', async () => {
   const dir = await acceptanceFixture(definitions + `Given('a precondition', () => { throw Error('must not execute'); });`);
-  await assert.rejects(runAcceptance(dir, undefined, path.join(dir, 'verification')), /Binding validation failed/);
+  await assert.rejects(runAcceptance(dir, path.join(dir, 'verification')), /Binding validation failed/);
   const runs = await readdir(path.join(dir, 'verification', '.acceptance'));
   await assert.rejects(access(path.join(dir, 'verification', '.acceptance', runs[0], 'results.json')));
 });
 
 test('Cucumber rejects ambiguous bindings and pending placeholders', async () => {
   let dir = await acceptanceFixture(definitions + `Given('a precondition', () => {}); Given('a precondition', () => {});`, 'Given a precondition');
-  await assert.rejects(runAcceptance(dir, undefined, path.join(dir, 'verification')), /Binding validation failed/);
+  await assert.rejects(runAcceptance(dir, path.join(dir, 'verification')), /Binding validation failed/);
   dir = await acceptanceFixture(definitions + `Given('a precondition', () => 'pending');`, 'Given a precondition');
-  await assert.rejects(runAcceptance(dir, undefined, path.join(dir, 'verification')), /Acceptance failed/);
+  await assert.rejects(runAcceptance(dir, path.join(dir, 'verification')), /Acceptance failed/);
 });
 
 test('unavailable application is genuine failing evidence with bound downstream steps', async () => {
   const server = createServer(); const url = await listening(server); await new Promise(r => server.close(r));
   const dir = await acceptanceFixture(definitions + `Given('a precondition', async () => { await fetch('${url}'); }); When('an action occurs', () => {}); Then('a result is visible', () => assert.ok(true));`);
-  await assert.rejects(runAcceptance(dir, undefined, path.join(dir, 'verification')), /Acceptance failed/);
+  await assert.rejects(runAcceptance(dir, path.join(dir, 'verification')), /Acceptance failed/);
   const runs = await readdir(path.join(dir, 'verification', '.acceptance'));
   const summary = JSON.parse(await readFile(path.join(dir, 'verification', '.acceptance', runs[0], 'summary.json')));
   assert.match(summary.evidence, /unavailable-application/); assert.equal(summary.planned.steps, 3);
@@ -104,7 +116,7 @@ test('acceptance can target an already-running API and pass real assertions', as
   const url = await listening(server);
   try {
     const dir = await acceptanceFixture(definitions + `Given('a precondition', async function () { this.response = await fetch('${url}'); }); When('an action occurs', async function () { this.body = await this.response.json(); }); Then('a result is visible', function () { assert.equal(this.response.status, 200); assert.equal(this.body.ready, true); });`);
-    assert.deepEqual(await runAcceptance(dir, undefined, path.join(dir, 'verification')), { scenarios: 1, steps: 3 });
+    assert.deepEqual(await runAcceptance(dir, path.join(dir, 'verification')), { scenarios: 1, steps: 3 });
   } finally { await new Promise(r => server.close(r)); }
 });
 
@@ -129,7 +141,7 @@ test('temporary checkouts, pinned/default revisions, real passing API acceptance
     state = await start({ components: [component] }, owner);
     assert.equal(state.components[0].revision, revision); assert.ok(state.workspace.startsWith(tmpdir())); assert.notEqual(state.components[0].checkout, repository);
     const dir = await acceptanceFixture(definitions + `Given('a precondition', async function () { this.response = await fetch('${url}'); }); When('an action occurs', async function () { this.body = await this.response.json(); }); Then('a result is visible', function () { assert.equal(this.response.status, 200); assert.equal(this.body.ready, true); });`);
-    assert.deepEqual(await runAcceptance(dir, undefined, path.join(dir, 'verification')), { scenarios: 1, steps: 3 });
+    assert.deepEqual(await runAcceptance(dir, path.join(dir, 'verification')), { scenarios: 1, steps: 3 });
   } finally { await stop(owner); }
   await assert.rejects(fetch(url));
   const external = createServer((req,res) => res.end('external')); const externalUrl = await listening(external);
@@ -184,7 +196,7 @@ test('OpenSpec CLI observes the sequential artifact graph in a temporary fixture
 
 test('repository layout isolates all verification tooling', async () => {
   assert.deepEqual((await readdir(root)).filter(name => name !== '.git').sort(),
-    ['.agents', 'AGENTS.md', 'README.md', 'architecture', 'openspec', 'verification']);
+    ['.agents', 'AGENTS.md', 'architecture', 'openspec', 'verification']);
   for (const name of ['package.json', 'package-lock.json', 'scripts', 'acceptance', 'test', '.gitignore']) {
     await access(path.join(verificationRoot, name));
   }
@@ -245,17 +257,18 @@ test('supporting skills have valid metadata, accessible assets and explicit sche
   }
 });
 
-test('empty-spec CLI and unconfigured configuration guards give actionable errors', () => {
+test('empty-spec CLI and unconfigured configuration guards give actionable errors', async () => {
   assert.throws(() => validateConfig({ components: [] }), /unconfigured.*verification\/scripts\/app.mjs/);
-  for (const [script, args, message] of [
-    ['acceptance.mjs', [], /empty.*Author spec.md/],
-
-  ]) {
-    const run = spawnSync(process.execPath, [path.join(verificationRoot, 'scripts', script), ...args], { cwd: root, encoding: 'utf8' });
-    assert.equal(run.status, 1); assert.match(run.stderr, message);
-  }
+  const { cp } = await import('node:fs/promises');
+  const dir = await temp();
+  const harness = path.join(dir, 'verification');
+  await cp(path.join(verificationRoot, 'scripts'), path.join(harness, 'scripts'), { recursive: true });
+  await symlink(path.join(verificationRoot, 'node_modules'), path.join(harness, 'node_modules'), 'dir');
+  const run = spawnSync(process.execPath, [path.join(harness, 'scripts/acceptance.mjs')], { cwd: dir, encoding: 'utf8' });
+  assert.equal(run.status, 1); assert.match(run.stderr, /empty.*Author spec.md/);
+  const obsolete = spawnSync(process.execPath, [path.join(harness, 'scripts/acceptance.mjs'), '--change', 'example'], { encoding: 'utf8' });
+  assert.equal(obsolete.status, 1); assert.match(obsolete.stderr, /Usage.*npm test/);
 });
-
 
 test('delta parsing rejects every malformed rename and unsupported operation section', () => {
   const base = requirement('old') + requirement('other');
